@@ -1,4 +1,0 @@
-default_log_lines: 100
-default_shell: /bin/bash
-namespace: ray-system
-yaml_dir: /mnt/fsx/youtu-agent/zhijianzhou/kubeflow_examples/raytool/ray-job
