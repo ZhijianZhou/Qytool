@@ -346,28 +346,29 @@ def _submit_occupy_jobs(namespace: str):
         print_warning("没有空闲的 GPU 节点可供占用")
         return
 
-    # 5. 按实例类型分组空闲节点
-    free_by_type: Dict[str, List[Dict]] = {}
+    # 5. 按 AZ + 实例类型分组空闲节点
+    free_by_az_type: Dict[Tuple[str, str], List[Dict]] = {}
     for n in free_nodes:
-        itype = n["instance_type"]
-        free_by_type.setdefault(itype, []).append(n)
+        key = (n.get("az", "unknown"), n["instance_type"])
+        free_by_az_type.setdefault(key, []).append(n)
 
     total_free_gpus = sum(n["gpu_count"] for n in free_nodes)
     console.print(f"[bold green]空闲节点: {len(free_nodes)} 个 ({total_free_gpus} 张 GPU)[/bold green]")
-    if len(free_by_type) > 1:
-        for itype, nodes in sorted(free_by_type.items()):
+    if len(free_by_az_type) > 1:
+        for (az, itype), nodes in sorted(free_by_az_type.items()):
             profile = _get_instance_profile(itype)
-            console.print(f"  [cyan]{itype}[/cyan]: {len(nodes)} 个 ({profile['description']})")
+            az_short = az.split("-")[-1] if "-" in az else az
+            console.print(f"  [cyan]{az_short} / {itype}[/cyan]: {len(nodes)} 个 ({profile['description']})")
     console.print()
 
-    # 6. 按实例类型分批：同一批次内只包含相同类型的节点
-    batch_plan = []       # 每个元素: (batch_size, instance_type)
-    for itype in sorted(free_by_type.keys()):
-        type_free = len(free_by_type[itype])
+    # 6. 按 AZ + 实例类型分批：同一批次内只包含相同 AZ 和类型的节点
+    batch_plan = []       # 每个元素: (batch_size, instance_type, az)
+    for (az, itype) in sorted(free_by_az_type.keys()):
+        type_free = len(free_by_az_type[(az, itype)])
         remaining = type_free
         while remaining > 0:
             batch = min(DEFAULT_BATCH_SIZE, remaining)
-            batch_plan.append((batch, itype))
+            batch_plan.append((batch, itype, az))
             remaining -= batch
 
     # 7. 为每个批次随机生成任务名，避免重名
@@ -383,11 +384,12 @@ def _submit_occupy_jobs(namespace: str):
     total_nodes = sum(b[0] for b in batch_plan)
     choices = []
     choices.append({"name": f"全部提交 ({total_nodes} 节点, {len(batch_plan)} 个任务)", "value": "all"})
-    for i, (batch_size, itype) in enumerate(batch_plan):
+    for i, (batch_size, itype, az) in enumerate(batch_plan):
         profile = _get_instance_profile(itype)
         gpus = batch_size * profile["gpus"]
+        az_short = az.split("-")[-1] if "-" in az else az
         choices.append({
-            "name": f"仅第 {i+1} 批: {job_names[i]} ({batch_size} 节点, {gpus} GPU, {profile['description']})",
+            "name": f"仅第 {i+1} 批: {job_names[i]} ({batch_size} 节点, {gpus} GPU, {az_short}/{profile['description']})",
             "value": str(i),
         })
     choices.append({"name": "取消", "value": "cancel"})
@@ -455,18 +457,19 @@ def _auto_occupy(namespace: str) -> int:
     if not free_nodes:
         return 0
 
-    # 按实例类型分组
-    free_by_type: Dict[str, List[Dict]] = {}
+    # 按 AZ + 实例类型分组
+    free_by_az_type: Dict[Tuple[str, str], List[Dict]] = {}
     for n in free_nodes:
-        free_by_type.setdefault(n["instance_type"], []).append(n)
+        key = (n.get("az", "unknown"), n["instance_type"])
+        free_by_az_type.setdefault(key, []).append(n)
 
-    # 按实例类型分批
-    batch_plan = []  # (batch_size, instance_type)
-    for itype in sorted(free_by_type.keys()):
-        remaining = len(free_by_type[itype])
+    # 按 AZ + 实例类型分批
+    batch_plan = []  # (batch_size, instance_type, az)
+    for (az, itype) in sorted(free_by_az_type.keys()):
+        remaining = len(free_by_az_type[(az, itype)])
         while remaining > 0:
             batch = min(DEFAULT_BATCH_SIZE, remaining)
-            batch_plan.append((batch, itype))
+            batch_plan.append((batch, itype, az))
             remaining -= batch
 
     # 生成随机任务名
@@ -617,12 +620,20 @@ def _get_gpu_nodes(namespace: str) -> List[Dict]:
             spec = item.get("spec", {})
             unschedulable = spec.get("unschedulable", False)
 
+            # 可用区 (AZ)
+            az = (
+                labels.get("topology.kubernetes.io/zone")
+                or labels.get("failure-domain.beta.kubernetes.io/zone")
+                or "unknown"
+            )
+
             nodes.append({
                 "name": metadata.get("name", ""),
                 "ready": ready,
                 "gpu_count": gpu_count,
                 "status": "SchedulingDisabled" if unschedulable else ("Ready" if ready else "NotReady"),
                 "instance_type": instance_type,
+                "az": az,
                 "gpu_model": profile["gpu_model"],
                 "efa_count": profile["efa"],
                 "description": profile["description"],
@@ -664,6 +675,7 @@ def _print_node_overview(all_nodes: list, busy_nodes: set, free_nodes: list):
     table = Table(title="🖥️  GPU 节点总览", show_lines=False, border_style="dim")
     table.add_column("#", style="dim", width=4)
     table.add_column("节点名称", style="cyan", min_width=40)
+    table.add_column("AZ", justify="center", width=8)
     table.add_column("实例类型", style="magenta", min_width=18)
     table.add_column("GPU", justify="center", width=10)
     table.add_column("节点状态", justify="center", width=12)
@@ -671,7 +683,7 @@ def _print_node_overview(all_nodes: list, busy_nodes: set, free_nodes: list):
 
     free_names = set(n["name"] for n in free_nodes)
 
-    for i, node in enumerate(sorted(all_nodes, key=lambda x: (x["instance_type"], x["name"])), 1):
+    for i, node in enumerate(sorted(all_nodes, key=lambda x: (x.get("az", ""), x["instance_type"], x["name"])), 1):
         is_busy = node["name"] in busy_nodes
         is_cordoned = node.get("unschedulable", False)
         if is_cordoned:
@@ -682,9 +694,11 @@ def _print_node_overview(all_nodes: list, busy_nodes: set, free_nodes: list):
             occupy_status = "[green]空闲[/green]"
         node_status = colorize_status(node["status"])
         gpu_info = f"{node['gpu_count']}×{node['gpu_model']}"
+        az_short = node.get("az", "?").split("-")[-1] if node.get("az") else "?"
         table.add_row(
             str(i),
             node["name"],
+            az_short,
             node["instance_type"].replace("ml.", ""),
             gpu_info,
             node_status,
@@ -697,10 +711,14 @@ def _print_node_overview(all_nodes: list, busy_nodes: set, free_nodes: list):
     from collections import Counter
     type_counter = Counter()
     free_type_counter = Counter()
+    az_type_counter = Counter()
+    free_az_type_counter = Counter()
     for n in all_nodes:
         type_counter[n["instance_type"]] += 1
+        az_type_counter[(n.get("az", "?"), n["instance_type"])] += 1
     for n in free_nodes:
         free_type_counter[n["instance_type"]] += 1
+        free_az_type_counter[(n.get("az", "?"), n["instance_type"])] += 1
 
     total = len(all_nodes)
     free = len(free_nodes)
@@ -714,19 +732,19 @@ def _print_node_overview(all_nodes: list, busy_nodes: set, free_nodes: list):
         console.print(f"  空闲 [green]{free}[/green] / 已占用 [red]{busy}[/red] / 总计 {total}")
         console.print(f"  {bar}")
 
-        # 按类型显示空闲详情
-        if len(type_counter) > 1:
-            console.print()
-            console.print("  [bold]按实例类型:[/bold]")
-            for itype in sorted(type_counter.keys()):
-                t_total = type_counter[itype]
-                t_free = free_type_counter.get(itype, 0)
-                profile = _get_instance_profile(itype)
-                status_color = "green" if t_free > 0 else "dim"
-                console.print(
-                    f"    [{status_color}]{itype}[/{status_color}]: "
-                    f"空闲 {t_free}/{t_total} ({profile['description']})"
-                )
+        # 按 AZ + 实例类型 显示空闲详情
+        console.print()
+        console.print("  [bold]按 AZ + 实例类型:[/bold]")
+        for (az, itype) in sorted(az_type_counter.keys()):
+            t_total = az_type_counter[(az, itype)]
+            t_free = free_az_type_counter.get((az, itype), 0)
+            profile = _get_instance_profile(itype)
+            status_color = "green" if t_free > 0 else "dim"
+            az_short = az.split("-")[-1] if "-" in az else az
+            console.print(
+                f"    [{status_color}]{az_short} / {itype}[/{status_color}]: "
+                f"空闲 {t_free}/{t_total} ({profile['description']})"
+            )
 
 
 def _get_existing_job_names(namespace: str) -> set:
@@ -783,10 +801,11 @@ def _generate_random_job_names(count: int, date_str: str, existing_names: set) -
 
 
 def _print_occupy_plan(batch_plan: list, job_names: list):
-    """打印占卡计划。batch_plan 元素为 (batch_size, instance_type)"""
+    """打印占卡计划。batch_plan 元素为 (batch_size, instance_type, az)"""
     table = Table(title="📋 占卡计划", show_lines=False, border_style="cyan")
     table.add_column("批次", style="bold", width=6)
     table.add_column("任务名", style="cyan", min_width=35)
+    table.add_column("AZ", justify="center", width=8)
     table.add_column("实例类型", style="magenta", min_width=18)
     table.add_column("节点数", justify="center", width=8)
     table.add_column("Master", justify="center", width=8)
@@ -794,14 +813,16 @@ def _print_occupy_plan(batch_plan: list, job_names: list):
     table.add_column("GPU 数", justify="center", width=8)
 
     total_gpus = 0
-    for i, (batch_size, itype) in enumerate(batch_plan):
+    for i, (batch_size, itype, az) in enumerate(batch_plan):
         worker_count = batch_size - 1
         profile = _get_instance_profile(itype)
         gpus = batch_size * profile["gpus"]
         total_gpus += gpus
+        az_short = az.split("-")[-1] if "-" in az else az
         table.add_row(
             f"#{i+1}",
             job_names[i],
+            az_short,
             itype.replace("ml.", ""),
             str(batch_size),
             "1",
@@ -814,6 +835,7 @@ def _print_occupy_plan(batch_plan: list, job_names: list):
         "[bold]合计[/bold]",
         f"[bold]{len(batch_plan)} 个任务[/bold]",
         "",
+        "",
         f"[bold]{total_nodes}[/bold]",
         f"[bold]{len(batch_plan)}[/bold]",
         f"[bold]{total_nodes - len(batch_plan)}[/bold]",
@@ -824,16 +846,16 @@ def _print_occupy_plan(batch_plan: list, job_names: list):
 
 
 def _generate_occupy_yamls(batch_plan: list, namespace: str, job_names: list) -> List[str]:
-    """根据批次计划生成占卡 YAML 文件。batch_plan 元素为 (batch_size, instance_type)"""
+    """根据批次计划生成占卡 YAML 文件。batch_plan 元素为 (batch_size, instance_type, az)"""
     # 确保输出目录存在
     os.makedirs(OCCUPY_YAML_DIR, exist_ok=True)
 
     yaml_files = []
 
-    for i, (batch_size, itype) in enumerate(batch_plan):
+    for i, (batch_size, itype, az) in enumerate(batch_plan):
         worker_count = batch_size - 1  # 1 个 Master + N 个 Worker
         job_name = job_names[i]
-        yaml_content = _build_occupy_yaml(job_name, namespace, worker_count, itype)
+        yaml_content = _build_occupy_yaml(job_name, namespace, worker_count, itype, az)
         
         output_path = os.path.join(OCCUPY_YAML_DIR, f"{job_name}.yaml")
         with open(output_path, "w") as f:
@@ -843,8 +865,8 @@ def _generate_occupy_yamls(batch_plan: list, namespace: str, job_names: list) ->
     return yaml_files
 
 
-def _build_occupy_yaml(job_name: str, namespace: str, worker_replicas: int, instance_type: str) -> str:
-    """构建占卡 PyTorchJob YAML 内容，根据实例类型动态调整资源配置"""
+def _build_occupy_yaml(job_name: str, namespace: str, worker_replicas: int, instance_type: str, az: str = "") -> str:
+    """构建占卡 PyTorchJob YAML 内容，根据实例类型和 AZ 动态调整资源配置"""
     profile = _get_instance_profile(instance_type)
     gpu_count = profile["gpus"]
     efa_count = profile["efa"]
@@ -949,8 +971,10 @@ def _build_occupy_yaml(job_name: str, namespace: str, worker_replicas: int, inst
         "volumeMounts": volume_mounts,
     }
 
-    # 根据实例类型设置 nodeSelector
+    # 根据实例类型和 AZ 设置 nodeSelector
     node_selector = {"node.kubernetes.io/instance-type": instance_type}
+    if az and az != "unknown":
+        node_selector["topology.kubernetes.io/zone"] = az
 
     pytorchjob = {
         "apiVersion": "kubeflow.org/v1",

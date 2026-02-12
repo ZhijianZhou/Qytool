@@ -199,3 +199,134 @@ def apply_yaml(yaml_path: str, namespace: str) -> Tuple[bool, str]:
         return True, stdout.strip()
     return False, stderr.strip()
 
+
+def get_nodes_info(namespace: str) -> List[Dict]:
+    """
+    获取所有节点的详细信息，包括 instance-type、AZ (availability zone)、GPU 等。
+    返回列表: [{name, instance_type, az, gpu_count, gpu_model, status, unschedulable, labels}]
+    """
+    rc, stdout, stderr = run_kubectl(
+        ["get", "nodes", "-o", "json"],
+        namespace,
+        timeout=15,
+    )
+    if rc != 0:
+        return []
+
+    try:
+        data = json.loads(stdout)
+        nodes = []
+        for item in data.get("items", []):
+            metadata = item.get("metadata", {})
+            labels = metadata.get("labels", {})
+            status_block = item.get("status", {})
+            spec = item.get("spec", {})
+
+            # 实例类型
+            instance_type = (
+                labels.get("node.kubernetes.io/instance-type")
+                or labels.get("beta.kubernetes.io/instance-type")
+                or "unknown"
+            )
+
+            # 可用区 (AZ)
+            az = (
+                labels.get("topology.kubernetes.io/zone")
+                or labels.get("failure-domain.beta.kubernetes.io/zone")
+                or "unknown"
+            )
+
+            # GPU 数量
+            capacity = status_block.get("capacity", {})
+            gpu_count = int(capacity.get("nvidia.com/gpu", 0))
+
+            # 节点状态
+            conditions = status_block.get("conditions", [])
+            ready = any(
+                c.get("type") == "Ready" and c.get("status") == "True"
+                for c in conditions
+            )
+            unschedulable = spec.get("unschedulable", False)
+
+            if unschedulable:
+                node_status = "SchedulingDisabled"
+            elif ready:
+                node_status = "Ready"
+            else:
+                node_status = "NotReady"
+
+            nodes.append({
+                "name": metadata.get("name", ""),
+                "instance_type": instance_type,
+                "az": az,
+                "gpu_count": gpu_count,
+                "status": node_status,
+                "ready": ready,
+                "unschedulable": unschedulable,
+                "labels": labels,
+            })
+        return nodes
+    except (json.JSONDecodeError, KeyError):
+        return []
+
+
+def get_pod_node_mapping(namespace: str) -> Dict[str, Dict]:
+    """
+    获取所有 Pod 所在节点的映射。
+    返回: {pod_name: {node_name, job_name, role, status, phase}}
+    """
+    rc, stdout, stderr = run_kubectl(
+        ["get", "pods", "-o", "json"],
+        namespace,
+        timeout=15,
+    )
+    if rc != 0:
+        return {}
+
+    try:
+        data = json.loads(stdout)
+        pod_map = {}
+        for item in data.get("items", []):
+            metadata = item.get("metadata", {})
+            spec = item.get("spec", {})
+            status_block = item.get("status", {})
+            labels = metadata.get("labels", {})
+
+            pod_name = metadata.get("name", "")
+            node_name = spec.get("nodeName", "")
+            phase = status_block.get("phase", "Unknown")
+
+            # 推断 job 名称
+            job_name = (
+                labels.get("training.kubeflow.org/job-name", "")
+                or labels.get("ray.io/cluster", "")
+                or labels.get("ray.io/job-name", "")
+                or labels.get("app.kubernetes.io/instance", "")
+            )
+            if not job_name:
+                job_name = _infer_job_name(pod_name)
+
+            # 推断角色
+            role = labels.get("training.kubeflow.org/replica-type", "").capitalize()
+            if not role:
+                role = labels.get("ray.io/node-type", "").capitalize()
+            if not role:
+                if "-master-" in pod_name:
+                    role = "Master"
+                elif "-head-" in pod_name:
+                    role = "Head"
+                elif "-worker-" in pod_name:
+                    role = "Worker"
+                else:
+                    role = "-"
+
+            pod_map[pod_name] = {
+                "node_name": node_name,
+                "job_name": job_name,
+                "role": role,
+                "status": phase,
+            }
+        return pod_map
+    except (json.JSONDecodeError, KeyError):
+        return {}
+

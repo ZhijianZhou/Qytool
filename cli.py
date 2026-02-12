@@ -163,6 +163,14 @@ def cmd_cordon(ctx):
     manage_cordon(ctx.obj["namespace"])
 
 
+@cli.command("nodes")
+@click.pass_context
+def cmd_nodes(ctx):
+    """🌐 节点信息 (按 AZ/实例类型查看节点与 Pod 分布)"""
+    from raytool.commands.nodes import nodes_info
+    nodes_info(ctx.obj["namespace"])
+
+
 # ──────────────────────── 屏保超时辅助 ────────────────────────
 
 class _ScreensaverTimeout(Exception):
@@ -297,6 +305,7 @@ def interactive_menu(namespace: str, config: dict = None):
                     {"name": "11. 🔥 GPU 占卡", "value": "occupy"},
                     {"name": "12. 🗺️  节点-Job 映射查询", "value": "map"},
                     {"name": "13. 🛡️  节点调度管理 (禁止/恢复调度)", "value": "cordon"},
+                    {"name": "14. 🌐 节点信息 (AZ/实例类型/Pod分布)", "value": "nodes"},
                     {"name": " 0. ❌ 退出", "value": "quit"},
                 ],
                 namespace=namespace,
@@ -352,6 +361,9 @@ def interactive_menu(namespace: str, config: dict = None):
             elif action == "cordon":
                 from raytool.commands.cordon import manage_cordon
                 manage_cordon(namespace)
+            elif action == "nodes":
+                from raytool.commands.nodes import nodes_info
+                nodes_info(namespace)
         except KeyboardInterrupt:
             console.print("\n[dim]操作已中断[/dim]")
         except Exception as e:
