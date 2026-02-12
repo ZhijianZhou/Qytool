@@ -170,19 +170,25 @@ def delete_pods(pod_names: List[str], namespace: str) -> List[Tuple[str, bool, s
 
 def exec_into_pod(pod_name: str, namespace: str, container: Optional[str] = None, shell: str = "/bin/bash"):
     """进入 Pod 容器终端"""
-    args = ["exec", "-it", pod_name]
+    # 先检查 pod 是否还存在且在运行
+    rc, stdout, stderr = run_kubectl(["get", "pod", pod_name, "-o", "jsonpath={.status.phase}"], namespace, timeout=10)
+    if rc != 0 or stdout.strip() not in ("Running", "Pending"):
+        from raytool.utils.ui import print_error
+        if "NotFound" in stderr:
+            print_error(f"Pod {pod_name} 已不存在（可能任务已结束或被删除）")
+        else:
+            print_error(f"Pod {pod_name} 当前状态: {stdout.strip() or '未知'}，无法连接")
+        return
+
+    # 注意: -n namespace 必须在 -- 之前，否则会被当作容器内命令参数
+    base = ["kubectl", "exec", "-it", pod_name, "-n", namespace]
     if container:
-        args += ["-c", container]
-    args += ["--", shell]
-    cmd = ["kubectl"] + args + ["-n", namespace]
+        base += ["-c", container]
+    cmd = base + ["--", shell]
     result = subprocess.run(cmd)
-    # 如果 bash 不存在，回退到 sh
-    if result.returncode != 0 and shell == "/bin/bash":
-        args_sh = ["exec", "-it", pod_name]
-        if container:
-            args_sh += ["-c", container]
-        args_sh += ["--", "/bin/sh"]
-        cmd_sh = ["kubectl"] + args_sh + ["-n", namespace]
+    # 只在 shell 不存在（退出码 126/127）时回退到 sh
+    if result.returncode in (126, 127) and shell == "/bin/bash":
+        cmd_sh = base + ["--", "/bin/sh"]
         subprocess.run(cmd_sh)
 
 

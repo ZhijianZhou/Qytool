@@ -185,10 +185,15 @@ def _select_with_screensaver(message, choices, namespace, config):
         old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
         try:
             signal.alarm(SCREENSAVER_TIMEOUT)
-            result = inquirer.select(
+            result = inquirer.fuzzy(
                 message=f"主人，{message}" if not message.startswith("主人") else message,
                 choices=choices,
                 pointer="❯",
+                border=True,
+                info=False,
+                prompt="🔍 ",
+                match_exact=False,
+                max_height="70%",
             ).execute()
             signal.alarm(0)
             return result
@@ -277,22 +282,22 @@ def interactive_menu(namespace: str, config: dict = None):
 
         try:
             action = _select_with_screensaver(
-                message="主人，请选择操作",
+                message="主人，请选择操作 (↑↓选择 / 输入数字或关键词搜索)",
                 choices=[
-                    {"name": "📊 集群概况总览", "value": "status"},
-                    {"name": "📋 监控 Pods 状态", "value": "watch"},
-                    {"name": "📃 查看所有任务列表", "value": "list"},
-                    {"name": "📜 查看任务日志", "value": "logs"},
-                    {"name": "🚀 提交新任务", "value": "submit"},
-                    {"name": "🗑️  删除任务", "value": "delete"},
-                    {"name": "🖥️  进入容器终端", "value": "exec"},
-                    {"name": "📋 查看任务详情", "value": "describe"},
-                    {"name": "📏 扩缩容集群", "value": "scale"},
-                    {"name": "🔌 端口转发 (Dashboard)", "value": "port-forward"},
-                    {"name": "🔥 GPU 占卡", "value": "occupy"},
-                    {"name": "🗺️  节点-Job 映射查询", "value": "map"},
-                    {"name": "🛡️  节点调度管理 (禁止/恢复调度)", "value": "cordon"},
-                    {"name": "❌ 退出", "value": "quit"},
+                    {"name": " 1. 📊 集群概况总览", "value": "status"},
+                    {"name": " 2. 📋 监控 Pods 状态", "value": "watch"},
+                    {"name": " 3. 📃 查看所有任务列表", "value": "list"},
+                    {"name": " 4. 📜 查看任务日志", "value": "logs"},
+                    {"name": " 5. 🚀 提交新任务", "value": "submit"},
+                    {"name": " 6. 🗑️  删除任务", "value": "delete"},
+                    {"name": " 7. 🖥️  进入容器终端", "value": "exec"},
+                    {"name": " 8. 📋 查看任务详情", "value": "describe"},
+                    {"name": " 9. 📏 扩缩容集群", "value": "scale"},
+                    {"name": "10. 🔌 端口转发 (Dashboard)", "value": "port-forward"},
+                    {"name": "11. 🔥 GPU 占卡", "value": "occupy"},
+                    {"name": "12. 🗺️  节点-Job 映射查询", "value": "map"},
+                    {"name": "13. 🛡️  节点调度管理 (禁止/恢复调度)", "value": "cordon"},
+                    {"name": " 0. ❌ 退出", "value": "quit"},
                 ],
                 namespace=namespace,
                 config=config,
