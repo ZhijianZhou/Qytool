@@ -327,12 +327,20 @@ def _submit_occupy_jobs(namespace: str):
     # 2. 获取已占用的节点
     busy_nodes = _get_busy_nodes(namespace)
 
-    # 3. 计算空闲节点
-    free_nodes = [n for n in all_nodes if n["name"] not in busy_nodes]
+    # 3. 计算空闲节点（排除已占用 + cordon 禁止调度的节点）
+    free_nodes = [n for n in all_nodes if n["name"] not in busy_nodes and not n.get("unschedulable", False)]
+    # 统计 cordon 节点
+    cordoned_nodes = [n for n in all_nodes if n.get("unschedulable", False)]
 
     # 4. 显示总览
     _print_node_overview(all_nodes, busy_nodes, free_nodes)
     console.print()
+
+    if cordoned_nodes:
+        console.print(f"[bold yellow]🛡️  已禁止调度 (cordon): {len(cordoned_nodes)} 个节点 (占卡将跳过)[/bold yellow]")
+        for n in cordoned_nodes:
+            console.print(f"[dim]    🚫 {n['name']}[/dim]")
+        console.print()
 
     if not free_nodes:
         print_warning("没有空闲的 GPU 节点可供占用")
@@ -442,7 +450,7 @@ def _auto_occupy(namespace: str) -> int:
         return 0
 
     busy_nodes = _get_busy_nodes(namespace)
-    free_nodes = [n for n in all_nodes if n["name"] not in busy_nodes]
+    free_nodes = [n for n in all_nodes if n["name"] not in busy_nodes and not n.get("unschedulable", False)]
 
     if not free_nodes:
         return 0
@@ -534,7 +542,7 @@ def _auto_patrol(namespace: str):
             try:
                 all_nodes = _get_gpu_nodes(namespace)
                 busy_nodes = _get_busy_nodes(namespace)
-                free_count = len([n for n in all_nodes if n["name"] not in busy_nodes]) if all_nodes else 0
+                free_count = len([n for n in all_nodes if n["name"] not in busy_nodes and not n.get("unschedulable", False)]) if all_nodes else 0
                 total = len(all_nodes) if all_nodes else 0
 
                 if free_count > 0:
@@ -605,15 +613,20 @@ def _get_gpu_nodes(namespace: str) -> List[Dict]:
 
             profile = _get_instance_profile(instance_type)
 
+            # 是否被 cordon（禁止调度）
+            spec = item.get("spec", {})
+            unschedulable = spec.get("unschedulable", False)
+
             nodes.append({
                 "name": metadata.get("name", ""),
                 "ready": ready,
                 "gpu_count": gpu_count,
-                "status": "Ready" if ready else "NotReady",
+                "status": "SchedulingDisabled" if unschedulable else ("Ready" if ready else "NotReady"),
                 "instance_type": instance_type,
                 "gpu_model": profile["gpu_model"],
                 "efa_count": profile["efa"],
                 "description": profile["description"],
+                "unschedulable": unschedulable,
             })
         return nodes
     except (json.JSONDecodeError, KeyError):
@@ -660,7 +673,13 @@ def _print_node_overview(all_nodes: list, busy_nodes: set, free_nodes: list):
 
     for i, node in enumerate(sorted(all_nodes, key=lambda x: (x["instance_type"], x["name"])), 1):
         is_busy = node["name"] in busy_nodes
-        occupy_status = "[red]已占用[/red]" if is_busy else "[green]空闲[/green]"
+        is_cordoned = node.get("unschedulable", False)
+        if is_cordoned:
+            occupy_status = "[yellow]🛡️ 禁止调度[/yellow]"
+        elif is_busy:
+            occupy_status = "[red]已占用[/red]"
+        else:
+            occupy_status = "[green]空闲[/green]"
         node_status = colorize_status(node["status"])
         gpu_info = f"{node['gpu_count']}×{node['gpu_model']}"
         table.add_row(

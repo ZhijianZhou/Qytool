@@ -7,9 +7,13 @@ RayTool — Ray 集群任务管理命令行工具
 """
 import sys
 import os
+import signal
 
 import click
 from raytool.utils.ui import console, print_banner, print_error
+
+# 屏保空闲超时（秒），5 分钟
+SCREENSAVER_TIMEOUT = 300
 
 # 延迟加载配置，避免 import 阶段触发交互式引导
 _config = None
@@ -143,6 +147,119 @@ def cmd_occupy(ctx):
     occupy_gpus(ctx.obj["namespace"])
 
 
+@cli.command("map")
+@click.pass_context
+def cmd_map(ctx):
+    """🗺️  节点-Job 双向查询 (节点→Job / Job→节点)"""
+    from raytool.commands.node_job_map import node_job_map
+    node_job_map(ctx.obj["namespace"])
+
+
+@cli.command("cordon")
+@click.pass_context
+def cmd_cordon(ctx):
+    """🛡️  节点调度管理 (cordon/uncordon 禁止/恢复调度)"""
+    from raytool.commands.cordon import manage_cordon
+    manage_cordon(ctx.obj["namespace"])
+
+
+# ──────────────────────── 屏保超时辅助 ────────────────────────
+
+class _ScreensaverTimeout(Exception):
+    """空闲超时触发屏保的信号异常"""
+    pass
+
+
+def _select_with_screensaver(message, choices, namespace, config):
+    """
+    带屏保超时的 inquirer.select
+    在等待用户选择时启动计时器，超时触发字符雨屏保，
+    屏保结束后重新显示菜单
+    """
+    from InquirerPy import inquirer
+
+    while True:
+        def _timeout_handler(signum, frame):
+            raise _ScreensaverTimeout()
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        try:
+            signal.alarm(SCREENSAVER_TIMEOUT)
+            result = inquirer.select(
+                message=f"主人，{message}" if not message.startswith("主人") else message,
+                choices=choices,
+                pointer="❯",
+            ).execute()
+            signal.alarm(0)
+            return result
+        except _ScreensaverTimeout:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            # 触发屏保
+            try:
+                from raytool.utils.fun import screensaver_matrix
+                screensaver_matrix()
+            except Exception:
+                pass
+            # 屏保退出后再次清空 stdin，防止按键泄漏
+            try:
+                import termios as _termios
+                _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
+            except Exception:
+                pass
+            # 屏保结束，重绘菜单
+            console.clear()
+            print_banner()
+            console.print(f"[dim]命名空间: {namespace}[/dim]")
+            console.print(f"[dim]💤 {SCREENSAVER_TIMEOUT // 60} 分钟无操作将进入字符雨屏保[/dim]\n")
+            continue
+        finally:
+            signal.alarm(0)
+            try:
+                signal.signal(signal.SIGALRM, old_handler)
+            except Exception:
+                pass
+
+
+def _wait_with_screensaver(namespace, config):
+    """带屏保超时的 '按回车返回主菜单' 等待"""
+    from InquirerPy import inquirer
+
+    while True:
+        def _timeout_handler(signum, frame):
+            raise _ScreensaverTimeout()
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        try:
+            signal.alarm(SCREENSAVER_TIMEOUT)
+            inquirer.text(message="主人，按回车键返回主菜单...").execute()
+            signal.alarm(0)
+            return
+        except _ScreensaverTimeout:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            try:
+                from raytool.utils.fun import screensaver_matrix
+                screensaver_matrix()
+            except Exception:
+                pass
+            # 屏保退出后清空 stdin
+            try:
+                import termios as _termios
+                _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
+            except Exception:
+                pass
+            # 屏保结束后重新显示提示
+            console.print()
+            continue
+        finally:
+            signal.alarm(0)
+            try:
+                signal.signal(signal.SIGALRM, old_handler)
+            except Exception:
+                pass
+
+
 # ──────────────────────── 交互式主菜单 ────────────────────────
 
 def interactive_menu(namespace: str, config: dict = None):
@@ -155,10 +272,11 @@ def interactive_menu(namespace: str, config: dict = None):
     while True:
         console.clear()
         print_banner()
-        console.print(f"[dim]命名空间: {namespace}[/dim]\n")
+        console.print(f"[dim]命名空间: {namespace}[/dim]")
+        console.print(f"[dim]💤 {SCREENSAVER_TIMEOUT // 60} 分钟无操作将进入字符雨屏保[/dim]\n")
 
         try:
-            action = inquirer.select(
+            action = _select_with_screensaver(
                 message="主人，请选择操作",
                 choices=[
                     {"name": "📊 集群概况总览", "value": "status"},
@@ -172,10 +290,13 @@ def interactive_menu(namespace: str, config: dict = None):
                     {"name": "📏 扩缩容集群", "value": "scale"},
                     {"name": "🔌 端口转发 (Dashboard)", "value": "port-forward"},
                     {"name": "🔥 GPU 占卡", "value": "occupy"},
+                    {"name": "🗺️  节点-Job 映射查询", "value": "map"},
+                    {"name": "🛡️  节点调度管理 (禁止/恢复调度)", "value": "cordon"},
                     {"name": "❌ 退出", "value": "quit"},
                 ],
-                pointer="❯",
-            ).execute()
+                namespace=namespace,
+                config=config,
+            )
         except (KeyboardInterrupt, EOFError):
             _exit_gracefully()
             return
@@ -220,15 +341,27 @@ def interactive_menu(namespace: str, config: dict = None):
             elif action == "occupy":
                 from raytool.commands.occupy import occupy_gpus
                 occupy_gpus(namespace)
+            elif action == "map":
+                from raytool.commands.node_job_map import node_job_map
+                node_job_map(namespace)
+            elif action == "cordon":
+                from raytool.commands.cordon import manage_cordon
+                manage_cordon(namespace)
         except KeyboardInterrupt:
             console.print("\n[dim]操作已中断[/dim]")
         except Exception as e:
             print_error(f"执行出错: {e}")
 
-        # 操作完成后等待用户按键返回主菜单
+        # 操作完成后显示毒鸡汤 + 等待用户按键返回主菜单（也带屏保超时）
         console.print()
         try:
-            inquirer.text(message="主人，按回车键返回主菜单...").execute()
+            from raytool.utils.fun import show_fortune
+            show_fortune()
+        except Exception:
+            pass
+        console.print()
+        try:
+            _wait_with_screensaver(namespace, config)
         except (KeyboardInterrupt, EOFError):
             _exit_gracefully()
             return
@@ -236,6 +369,11 @@ def interactive_menu(namespace: str, config: dict = None):
 
 def _exit_gracefully():
     console.print("\n[cyan]👋 主人再见！[/cyan]")
+    try:
+        from raytool.utils.fun import run_cmatrix
+        run_cmatrix(duration=3)
+    except Exception:
+        pass
 
 
 # ──────────────────────── 入口 ────────────────────────

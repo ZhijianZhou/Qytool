@@ -21,6 +21,8 @@ def view_logs(namespace: str, default_lines: int = 100, job_name: str = None, po
             return
         pod = target_pod
         container = select_container(pod["containers"], message="请选择容器")
+        if container is None and len(pod["containers"]) > 1:
+            return
     else:
         # 如果指定了 job_name，跳过任务选择
         if job_name and job_name in jobs:
@@ -38,6 +40,8 @@ def view_logs(namespace: str, default_lines: int = 100, job_name: str = None, po
 
         # 步骤3: 选择容器（如果有多个）
         container = select_container(pod["containers"], message="请选择容器")
+        if container is None and len(pod["containers"]) > 1:
+            return
 
     # 步骤4: 选择日志模式
     mode = inquirer.select(
@@ -48,11 +52,14 @@ def view_logs(namespace: str, default_lines: int = 100, job_name: str = None, po
             {"name": "最后 1000 行", "value": ("tail", 1000)},
             {"name": "实时追踪 (follow)", "value": ("follow", None)},
             {"name": "全部日志", "value": ("all", None)},
+            {"name": "↩️  返回上一级", "value": ("cancel", None)},
         ],
         pointer="❯",
     ).execute()
 
     mode_type, mode_value = mode
+    if mode_type == "cancel":
+        return
 
     # 构建 kubectl logs 参数
     args = ["logs", pod["name"]]

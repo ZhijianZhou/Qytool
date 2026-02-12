@@ -36,9 +36,13 @@ def scale_job(namespace: str):
         choices=[
             {"name": "🔼 扩容 (增加 Worker)", "value": "up"},
             {"name": "🔽 缩容 (减少 Worker)", "value": "down"},
+            {"name": "↩️  返回上一级", "value": "cancel"},
         ],
         pointer="❯",
     ).execute()
+
+    if scale_type == "cancel":
+        return
 
     # 输入新的 Worker 数量
     if scale_type == "up":

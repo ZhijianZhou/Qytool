@@ -37,12 +37,16 @@ def submit_job(namespace: str, yaml_dir: str = "~/ray-jobs/", yaml_path: str = N
         else:
             print_warning(f"默认 YAML 目录 {yaml_dir} 不存在")
         choices.append({"name": "📁 手动输入路径...", "value": "__manual__"})
+    choices.append({"name": "↩️  返回上一级", "value": "__cancel__"})
 
     selected = inquirer.select(
         message="主人，请选择 YAML 文件",
         choices=choices,
         pointer="❯",
     ).execute()
+
+    if selected == "__cancel__":
+        return
 
     if selected == "__manual__":
         selected = inquirer.filepath(

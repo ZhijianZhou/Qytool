@@ -58,12 +58,16 @@ def port_forward(namespace: str, local_port: int = None, remote_port: int = 8265
             {"name": "Ray Dashboard (8265)", "value": 8265},
             {"name": "Ray Head API (8000)", "value": 8000},
             {"name": "自定义端口...", "value": "custom"},
+            {"name": "↩️  返回上一级", "value": "cancel"},
         ]
         local_port = inquirer.select(
             message="请选择本地端口",
             choices=port_choices,
             pointer="❯",
         ).execute()
+
+        if local_port == "cancel":
+            return
 
         if local_port == "custom":
             local_port = inquirer.number(

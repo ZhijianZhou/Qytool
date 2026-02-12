@@ -33,6 +33,8 @@ def shell_into_pod(namespace: str, default_shell: str = "/bin/bash", pod_name: s
 
     # 步骤3: 选择容器
     container = select_container(pod["containers"], message="请选择容器")
+    if container is None and len(pod["containers"]) > 1:
+        return
 
     # 步骤4: 进入容器
     pod_display = pod["name"]

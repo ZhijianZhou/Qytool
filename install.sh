@@ -72,6 +72,76 @@ echo ""
 echo "正在安装 Python 依赖..."
 pip install -e . 2>&1 || pip install --user -e . 2>&1
 
+# ──────────── 3.5 安装趣味工具 (cmatrix + fortune) ────────────
+
+echo ""
+echo "正在安装趣味工具 (cmatrix 字符雨 + fortune 毒鸡汤)..."
+
+_install_fun_tools() {
+    # 检测包管理器
+    if command -v apt-get &> /dev/null; then
+        PKG_MGR="apt"
+        sudo apt-get update -qq 2>/dev/null
+        sudo apt-get install -y -qq cmatrix fortune-mod 2>/dev/null && return 0
+    elif command -v dnf &> /dev/null; then
+        PKG_MGR="dnf"
+        # Amazon Linux / Fedora — fortune-mod 可能在 EPEL
+        sudo dnf install -y fortune-mod 2>/dev/null || true
+    elif command -v yum &> /dev/null; then
+        PKG_MGR="yum"
+        sudo yum install -y fortune-mod 2>/dev/null || true
+    elif command -v brew &> /dev/null; then
+        PKG_MGR="brew"
+        brew install cmatrix fortune 2>/dev/null && return 0
+    fi
+
+    # cmatrix 大概率不在 dnf/yum 源里，源码编译
+    if ! command -v cmatrix &> /dev/null; then
+        echo "  源码编译 cmatrix ..."
+        # 确保有编译工具和 ncurses
+        if command -v dnf &> /dev/null; then
+            sudo dnf install -y gcc make cmake ncurses-devel git 2>/dev/null || true
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y gcc make cmake ncurses-devel git 2>/dev/null || true
+        fi
+
+        CMATRIX_TMP="/tmp/cmatrix_build_$$"
+        git clone --depth 1 https://github.com/abishekvashok/cmatrix.git "$CMATRIX_TMP" 2>/dev/null
+        if [ -d "$CMATRIX_TMP" ]; then
+            cd "$CMATRIX_TMP"
+            mkdir -p build && cd build
+            cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local 2>/dev/null
+            make -j"$(nproc)" 2>/dev/null && sudo make install 2>/dev/null
+            cd /tmp && rm -rf "$CMATRIX_TMP"
+            echo "  cmatrix 编译安装完成"
+        else
+            echo "  ⚠️  cmatrix 源码克隆失败，跳过（不影响 raytool 使用）"
+        fi
+    fi
+
+    # fortune — 如果还没装上，也源码编一个简易版
+    if ! command -v fortune &> /dev/null; then
+        echo "  ⚠️  fortune 未能安装，raytool 将使用内置毒鸡汤兜底"
+    fi
+}
+
+_install_fun_tools || true
+
+# 回到安装目录
+cd "$INSTALL_DIR"
+
+echo ""
+if command -v cmatrix &> /dev/null; then
+    echo "  ✅ cmatrix 已就绪"
+else
+    echo "  ⚠️  cmatrix 未安装（不影响使用，退出时字符雨会跳过）"
+fi
+if command -v fortune &> /dev/null; then
+    echo "  ✅ fortune 已就绪"
+else
+    echo "  ⚠️  fortune 未安装（将使用内置毒鸡汤语录）"
+fi
+
 # ──────────── 4. 生成配置文件 ────────────
 
 cat > ~/.raytoolconfig << CONFEOF

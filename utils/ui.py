@@ -94,7 +94,7 @@ def print_jobs_table(jobs: Dict[str, List[Dict]]):
 
 
 def select_job(jobs: Dict[str, List[Dict]], message: str = "请选择任务") -> Optional[str]:
-    """交互式选择一个任务，返回任务名"""
+    """交互式选择一个任务，返回任务名。选择返回时返回 None"""
     if not jobs:
         console.print("[yellow]⚠️  主人，当前没有运行中的任务[/yellow]")
         return None
@@ -106,6 +106,7 @@ def select_job(jobs: Dict[str, List[Dict]], message: str = "请选择任务") ->
         worker_count = sum(1 for p in pods if get_pod_role(p) == "Worker")
         label = f"{job_name}  ({len(pods)}节点: {head_count}H + {worker_count}W)"
         choices.append({"name": label, "value": job_name})
+    choices.append({"name": "↩️  返回上一级", "value": None})
 
     result = inquirer.select(
         message=f"主人，{message}",
@@ -138,7 +139,7 @@ def select_jobs_multi(jobs: Dict[str, List[Dict]], message: str = "请选择任�
 
 
 def select_pod(pods: List[Dict], message: str = "请选择节点") -> Optional[Dict]:
-    """交互式选择一个 Pod，返回 Pod 字典"""
+    """交互式选择一个 Pod，返回 Pod 字典。选择返回时返回 None"""
     if not pods:
         console.print("[yellow]⚠️  主人，该任务下没有 Pod[/yellow]")
         return None
@@ -148,6 +149,7 @@ def select_pod(pods: List[Dict], message: str = "请选择节点") -> Optional[D
         role = pod.get("role", "Unknown")
         label = f"{pod['name']}  ({role}, {pod['status']})"
         choices.append({"name": label, "value": pod})
+    choices.append({"name": "↩️  返回上一级", "value": None})
 
     result = inquirer.select(
         message=f"主人，{message}",
@@ -158,17 +160,20 @@ def select_pod(pods: List[Dict], message: str = "请选择节点") -> Optional[D
 
 
 def select_container(containers: List[str], message: str = "请选择容器") -> Optional[str]:
-    """交互式选择容器"""
+    """交互式选择容器。选择返回时返回 None"""
     if not containers:
         return None
     if len(containers) == 1:
         return containers[0]
 
+    choices = list(containers) + ["↩️  返回上一级"]
     result = inquirer.select(
         message=f"主人，{message}",
-        choices=containers,
+        choices=choices,
         pointer="❯",
     ).execute()
+    if result == "↩️  返回上一级":
+        return None
     return result
 
 
