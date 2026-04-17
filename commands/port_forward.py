@@ -5,6 +5,7 @@ from InquirerPy import inquirer
 from raytool.utils.kube import get_running_pods, group_pods_by_job, run_kubectl
 from raytool.utils.ui import (
     console, select_job, select_pod, print_info, print_error, print_warning,
+    ESC_KEYBINDING,
 )
 
 
@@ -64,9 +65,10 @@ def port_forward(namespace: str, local_port: int = None, remote_port: int = 8265
             message="请选择本地端口",
             choices=port_choices,
             pointer="❯",
+            keybindings=ESC_KEYBINDING,
         ).execute()
 
-        if local_port == "cancel":
+        if local_port == "cancel" or local_port is None:
             return
 
         if local_port == "custom":

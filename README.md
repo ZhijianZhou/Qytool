@@ -64,19 +64,34 @@ raytool --kubeconfig ~/.kube/other list # 指定 kubeconfig
 
 ## ⚙️ 配置
 
-首次运行时，工具会交互式引导你创建配置文件。也可以手动创建配置文件，按以下优先级查找：
+### 配置架构 (v2.1)
+
+RayTool 采用 **全局配置 + 个人偏好** 的分层架构：
+
+| 层级 | 存储位置 | 说明 |
+|------|---------|------|
+| 全局配置 | `{data_dir}/raytool_global_config.yaml` | 安装时写入共享目录，全员共享 |
+| 本地覆盖 | `.raytoolconfig`（可选） | 当前目录或 `~/` 下，覆盖全局配置 |
+| 个人偏好 | `{data_dir}/raytool_users.json` | `yaml_dir` / `prewarm_dir` 等跟随用户 |
+
+配置加载优先级（从高到低）：
 
 1. 环境变量 `RAYTOOL_CONFIG` 指定的路径
-2. 当前目录 `.raytoolconfig`
-3. 用户目录 `~/.raytoolconfig`
+2. 共享目录 `{data_dir}/raytool_global_config.yaml`
+3. 当前目录 `.raytoolconfig`（向后兼容）
+4. 用户目录 `~/.raytoolconfig`（向后兼容）
+5. 内置默认值
 
-配置文件格式（YAML）：
+> 💡 安装一次后，所有用户直接登录即可使用，无需每人维护配置文件。
+> 个人偏好在「用户管理 → 个人设置」中配置。
+
+全局配置文件格式（YAML）：
 
 ```yaml
 namespace: ray-system        # 默认命名空间
-yaml_dir: ./ray-job          # YAML 任务文件目录
 default_log_lines: 100       # 默认日志行数
 default_shell: /bin/bash     # exec 默认 shell
+data_dir: /mnt/fsx-c/youtu-agent/youtu  # 共享数据目录
 ```
 
 ## 🔥 GPU 占卡功能

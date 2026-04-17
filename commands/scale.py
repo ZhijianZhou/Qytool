@@ -3,6 +3,7 @@ from InquirerPy import inquirer
 from raytool.utils.kube import get_running_pods, group_pods_by_job, run_kubectl
 from raytool.utils.ui import (
     console, select_job, confirm, print_info, print_error, print_warning, print_success,
+    ESC_KEYBINDING,
 )
 
 
@@ -39,9 +40,10 @@ def scale_job(namespace: str):
             {"name": "↩️  返回上一级", "value": "cancel"},
         ],
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if scale_type == "cancel":
+    if scale_type == "cancel" or scale_type is None:
         return
 
     # 输入新的 Worker 数量

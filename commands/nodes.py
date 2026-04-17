@@ -6,7 +6,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from raytool.utils.kube import get_nodes_info, get_pod_node_mapping
-from raytool.utils.ui import console, print_info, print_warning, colorize_status
+from raytool.utils.ui import console, print_info, print_warning, colorize_status, ESC_KEYBINDING
 
 
 def nodes_info(namespace: str):
@@ -17,12 +17,14 @@ def nodes_info(namespace: str):
             {"name": "📊 节点总览 (按 AZ + 实例类型分组)", "value": "overview"},
             {"name": "🔍 按区域/类型筛选 Pod", "value": "filter"},
             {"name": "📋 节点详细列表", "value": "detail"},
+            {"name": "🏷️  查看任务节点的 instance-group-name", "value": "group_name"},
             {"name": "❌ 返回", "value": "cancel"},
         ],
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if action == "cancel":
+    if action == "cancel" or action is None:
         return
     elif action == "overview":
         _show_overview(namespace)
@@ -30,6 +32,8 @@ def nodes_info(namespace: str):
         _filter_pods_by_az_type(namespace)
     elif action == "detail":
         _show_detail_list(namespace)
+    elif action == "group_name":
+        _show_job_instance_group(namespace)
 
 
 def _show_overview(namespace: str):
@@ -142,9 +146,10 @@ def _filter_pods_by_az_type(namespace: str):
         message="选择要查看的 AZ + 实例类型组合",
         choices=choices,
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if selected == "cancel":
+    if selected == "cancel" or selected is None:
         return
 
     az, itype = selected
@@ -280,3 +285,120 @@ def _show_detail_list(namespace: str):
         az_short = az.split("-")[-1] if "-" in az else az
         color = "green" if free > 0 else "dim"
         console.print(f"  [{color}]{az_short} / {itype}[/{color}]: 空闲 {free}/{total}")
+
+
+def _show_job_instance_group(namespace: str):
+    """选择一个任务，查看其所有节点的 instance-group-name label"""
+    print_info("正在获取节点和 Pod 信息...")
+
+    nodes = get_nodes_info(namespace)
+    pod_map = get_pod_node_mapping(namespace)
+
+    if not nodes:
+        print_warning("未获取到节点信息")
+        return
+
+    # 构建 node_name → node_info 映射
+    node_lookup = {n["name"]: n for n in nodes}
+
+    # 按 job 分组 pods
+    job_pods = defaultdict(list)
+    for pod_name, info in pod_map.items():
+        if info["job_name"] and info["node_name"]:
+            job_pods[info["job_name"]].append({
+                "pod_name": pod_name,
+                **info,
+            })
+
+    if not job_pods:
+        print_warning("未找到任何运行中的任务")
+        return
+
+    # 构建选择列表
+    choices = []
+    for job_name in sorted(job_pods.keys()):
+        pods = job_pods[job_name]
+        choices.append({
+            "name": f"{job_name}  ({len(pods)} pods)",
+            "value": job_name,
+        })
+    choices.append({"name": "❌ 返回", "value": "cancel"})
+
+    selected = inquirer.select(
+        message="选择要查看的任务",
+        choices=choices,
+        pointer="❯",
+        keybindings=ESC_KEYBINDING,
+    ).execute()
+
+    if selected == "cancel" or selected is None:
+        return
+
+    pods = job_pods[selected]
+
+    # 常见的 instance-group-name label keys
+    GROUP_LABEL_KEYS = [
+        "sagemaker.amazonaws.com/instance-group-name",
+        "instance-group-name",
+        "eks.amazonaws.com/nodegroup",
+        "alpha.eksctl.io/nodegroup-name",
+    ]
+
+    table = Table(
+        title=f"🏷️  {selected} — 节点 instance-group-name",
+        show_lines=True,
+        border_style="cyan",
+    )
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Pod 名称", min_width=40)
+    table.add_column("角色", justify="center", width=8)
+    table.add_column("节点名称", style="cyan", min_width=35)
+    table.add_column("instance-group-name", style="bold yellow", min_width=25)
+    table.add_column("AZ", justify="center", width=8)
+    table.add_column("实例类型", style="magenta", min_width=18)
+
+    # 统计 group name
+    group_counter = Counter()
+
+    for i, p in enumerate(sorted(pods, key=lambda x: x["pod_name"]), 1):
+        node = node_lookup.get(p["node_name"], {})
+        labels = node.get("labels", {})
+
+        # 尝试多个可能的 label key
+        group_name = ""
+        for key in GROUP_LABEL_KEYS:
+            group_name = labels.get(key, "")
+            if group_name:
+                break
+        if not group_name:
+            group_name = "[dim]N/A[/dim]"
+        else:
+            group_counter[group_name] += 1
+
+        az = node.get("az", "?")
+        az_short = az.split("-")[-1] if "-" in az else az
+        itype = node.get("instance_type", "?")
+
+        table.add_row(
+            str(i),
+            p["pod_name"],
+            p["role"],
+            p["node_name"],
+            group_name,
+            az_short,
+            itype.replace("ml.", ""),
+        )
+
+    console.print(table)
+    console.print()
+
+    # 汇总统计
+    if group_counter:
+        console.print("[bold]📊 instance-group-name 分布统计:[/bold]")
+        for gname, count in sorted(group_counter.items()):
+            console.print(f"  [yellow]{gname}[/yellow]: {count} 个节点")
+        console.print()
+        if len(group_counter) > 1:
+            print_warning(f"该任务的节点分布在 {len(group_counter)} 个不同的 instance-group 中")
+        else:
+            print_info(f"该任务的所有节点都在同一个 instance-group: {list(group_counter.keys())[0]}")

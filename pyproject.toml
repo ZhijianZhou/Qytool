@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "raytool"
-version = "1.0.0"
+version = "2.1.0"
 description = "Ray 集群任务管理命令行工具"
 readme = "README.md"
 license = {text = "MIT"}

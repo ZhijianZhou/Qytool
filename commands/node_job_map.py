@@ -8,7 +8,7 @@ from InquirerPy import inquirer
 
 from raytool.utils.kube import run_kubectl, get_pods
 from raytool.utils.ui import (
-    console, colorize_status, print_warning, print_info, print_error,
+    console, colorize_status, print_warning, print_info, print_error, ESC_KEYBINDING,
 )
 
 
@@ -24,9 +24,10 @@ def node_job_map(namespace: str):
             {"name": "❌ 返回", "value": "cancel"},
         ],
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if action == "cancel":
+    if action == "cancel" or action is None:
         return
     elif action == "search":
         _search_query(namespace)
@@ -293,9 +294,10 @@ def _node_to_job(namespace: str):
         message="主人，请选择节点",
         choices=choices,
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if selected == "__cancel__":
+    if selected == "__cancel__" or selected is None:
         return
 
     if selected == "__all__":
@@ -413,9 +415,10 @@ def _job_to_node(namespace: str):
         message="主人，请选择 Job",
         choices=choices,
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if selected == "__cancel__":
+    if selected == "__cancel__" or selected is None:
         return
 
     if selected == "__all__":

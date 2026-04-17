@@ -1,5 +1,6 @@
 """功能7: 查看任务/Pod详细信息"""
 from InquirerPy import inquirer
+from rich.markup import escape
 from raytool.utils.kube import get_pods, group_pods_by_job, run_kubectl, get_pod_role
 from raytool.utils.ui import (
     console, select_job, select_pod, print_info, print_error, print_warning,
@@ -63,7 +64,7 @@ def _display_pod_details(pod: dict, namespace: str):
 
     console.print(Panel(
         Text(stdout, style="dim"),
-        title=f"📋 Pod 详情: {pod_name}",
+        title=f"📋 Pod 详情: {escape(pod_name)}",
         border_style="cyan",
         padding=(0, 1)
     ))
@@ -96,6 +97,6 @@ def describe_pod_yaml(namespace: str, pod_name: str = None):
     syntax = Syntax(stdout, "yaml", theme="monokai", line_numbers=True)
     console.print(Panel(
         syntax,
-        title=f"📄 YAML: {pod_name}",
+        title=f"📄 YAML: {escape(pod_name)}",
         border_style="cyan"
     ))

@@ -1,6 +1,7 @@
 """功能1: 监控 Pods 状态 (kubectl get pods -n ray-system -w)"""
 import sys
 import signal
+from rich.markup import escape
 from raytool.utils.kube import run_kubectl_stream
 from raytool.utils.ui import console, print_info, print_error, colorize_status, STATUS_COLORS
 
@@ -20,8 +21,8 @@ def watch_pods(namespace: str):
             line = line.rstrip()
             if not line:
                 continue
-            # 为状态关键字上色
-            colored = line
+            # 先转义整行，再为状态关键字上色
+            colored = escape(line)
             for status, color in STATUS_COLORS.items():
                 if status in colored:
                     colored = colored.replace(status, f"[{color}]{status}[/{color}]")

@@ -72,7 +72,8 @@ def show_fortune():
         fortune_text = random.choice(_BUILTIN_FORTUNES)
 
     console.print()
-    console.print(f"  [bold yellow]🥠 每日一毒[/bold yellow]  [italic dim]{fortune_text}[/italic dim]")
+    from rich.markup import escape as _esc
+    console.print(f"  [bold yellow]🥠 每日一毒[/bold yellow]  [italic dim]{_esc(fortune_text)}[/italic dim]")
 
 
 # ──────────────────────── 黑客帝国字符雨 ────────────────────────

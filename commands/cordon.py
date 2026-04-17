@@ -10,7 +10,7 @@ from InquirerPy import inquirer
 from raytool.utils.kube import run_kubectl
 from raytool.utils.ui import (
     console, colorize_status, confirm,
-    print_success, print_error, print_warning, print_info,
+    print_success, print_error, print_warning, print_info, ESC_KEYBINDING,
 )
 
 
@@ -25,9 +25,10 @@ def manage_cordon(namespace: str):
             {"name": "❌ 返回", "value": "cancel"},
         ],
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if action == "cancel":
+    if action == "cancel" or action is None:
         return
     elif action == "status":
         _show_node_status(namespace)
@@ -194,6 +195,7 @@ def _cordon_nodes(namespace: str):
         message="主人，请选择要禁止调度的节点 (空格选择, 回车确认)",
         choices=choices,
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
     if not selected:
@@ -254,6 +256,7 @@ def _uncordon_nodes(namespace: str):
         message="主人，请选择要恢复调度的节点 (空格选择, 回车确认)",
         choices=choices,
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
     if not selected:

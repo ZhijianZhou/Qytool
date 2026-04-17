@@ -5,15 +5,10 @@ RayTool — Ray 集群任务管理命令行工具
     python -m raytool         # 交互式主菜单
     python -m raytool watch    # 直接执行子命令
 """
-import sys
 import os
-import signal
 
 import click
-from raytool.utils.ui import console, print_banner, print_error
-
-# 屏保空闲超时（秒），5 分钟
-SCREENSAVER_TIMEOUT = 300
+from raytool.utils.ui import console, print_banner, print_error, print_success, ESC_KEYBINDING
 
 # 延迟加载配置，避免 import 阶段触发交互式引导
 _config = None
@@ -31,8 +26,9 @@ def _get_config():
 @click.group(invoke_without_command=True)
 @click.option("--namespace", "-n", default=None, help="覆盖默认命名空间")
 @click.option("--kubeconfig", default=None, help="指定 kubeconfig 路径")
+@click.option("--user", "-u", default=None, help="快速登录用户名，如: raytool -u dexterzhou")
 @click.pass_context
-def cli(ctx, namespace, kubeconfig):
+def cli(ctx, namespace, kubeconfig, user):
     """🚀 RayTool — Ray 集群任务管理工具"""
     config = _get_config()
     ctx.ensure_object(dict)
@@ -44,7 +40,7 @@ def cli(ctx, namespace, kubeconfig):
 
     # 没有子命令时进入交互式主菜单
     if ctx.invoked_subcommand is None:
-        interactive_menu(ctx.obj["namespace"], config)
+        interactive_menu(ctx.obj["namespace"], config, quick_user=user)
 
 
 @cli.command("watch")
@@ -60,7 +56,7 @@ def cmd_watch(ctx):
 def cmd_list(ctx):
     """📃 查看所有任务列表 (含 Pending/Failed)"""
     from raytool.commands.list_jobs import list_jobs
-    list_jobs(ctx.obj["namespace"])
+    list_jobs(ctx.obj["namespace"], config=ctx.obj["config"])
 
 
 @cli.command("status")
@@ -68,7 +64,7 @@ def cmd_list(ctx):
 def cmd_status(ctx):
     """📊 集群概况总览"""
     from raytool.commands.status import cluster_status
-    cluster_status(ctx.obj["namespace"])
+    cluster_status(ctx.obj["namespace"], config=ctx.obj["config"])
 
 
 @cli.command("logs")
@@ -84,21 +80,24 @@ def cmd_logs(ctx, job_name, pod_name):
 
 @cli.command("submit")
 @click.argument("yaml_path", required=False)
+@click.option("--user", "-u", default=None, help="操作用户名")
 @click.pass_context
-def cmd_submit(ctx, yaml_path):
+def cmd_submit(ctx, yaml_path, user):
     """🚀 提交新任务"""
     from raytool.commands.submit import submit_job
     config = ctx.obj["config"]
-    submit_job(ctx.obj["namespace"], config["yaml_dir"], yaml_path)
+    submit_job(ctx.obj["namespace"], config["yaml_dir"], yaml_path, current_user=user, config=config)
 
 
 @cli.command("delete")
 @click.argument("yaml_path", required=False)
+@click.option("--user", "-u", default=None, help="操作用户名")
 @click.pass_context
-def cmd_delete(ctx, yaml_path):
+def cmd_delete(ctx, yaml_path, user):
     """🗑️  删除任务"""
     from raytool.commands.delete import delete_jobs
-    delete_jobs(ctx.obj["namespace"], yaml_path)
+    config = ctx.obj["config"]
+    delete_jobs(ctx.obj["namespace"], yaml_path, current_user=user, config=config)
 
 
 @cli.command("exec")
@@ -127,6 +126,9 @@ def cmd_describe(ctx, pod_name):
 def cmd_port_forward(ctx, local_port, remote_port):
     """🔌 端口转发 (访问 Ray Dashboard)"""
     from raytool.commands.port_forward import port_forward
+    config = ctx.obj["config"]
+    if remote_port == 8265:
+        remote_port = config.get("default_remote_port", 8265)
     port_forward(ctx.obj["namespace"], local_port, remote_port)
 
 
@@ -140,11 +142,13 @@ def cmd_scale(ctx, worker_count):
 
 
 @cli.command("occupy")
+@click.option("--name", "-N", default=None, help="占卡任务名称 (如: glm5, qwen3-sft)")
+@click.option("--gpus", "-g", type=int, default=None, help="指定占用 GPU 数量 (如: 256)")
 @click.pass_context
-def cmd_occupy(ctx):
+def cmd_occupy(ctx, name, gpus):
     """🔥 GPU 占卡 (查询空闲节点并提交占卡任务)"""
     from raytool.commands.occupy import occupy_gpus
-    occupy_gpus(ctx.obj["namespace"])
+    occupy_gpus(ctx.obj["namespace"], config=ctx.obj["config"], custom_name=name, custom_gpus=gpus)
 
 
 @cli.command("map")
@@ -171,125 +175,205 @@ def cmd_nodes(ctx):
     nodes_info(ctx.obj["namespace"])
 
 
-# ──────────────────────── 屏保超时辅助 ────────────────────────
+@cli.command("prewarm")
+@click.pass_context
+def cmd_prewarm(ctx):
+    """🔥 镜像预热 (管理 prewarm 目录下的预热 YAML)"""
+    from raytool.commands.prewarm import prewarm_images
+    prewarm_images(ctx.obj["namespace"], ctx.obj["config"])
 
-class _ScreensaverTimeout(Exception):
-    """空闲超时触发屏保的信号异常"""
-    pass
+
+@cli.command("admin")
+@click.pass_context
+def cmd_admin(ctx):
+    """🔑 管理员模式 (查看/删除任意 PyTorchJob)"""
+    from raytool.commands.admin import admin_mode
+    admin_mode(ctx.obj["namespace"])
 
 
-def _select_with_screensaver(message, choices, namespace, config):
-    """
-    带屏保超时的 inquirer.select
-    在等待用户选择时启动计时器，超时触发字符雨屏保，
-    屏保结束后重新显示菜单
-    """
+# ──────────────────────── 菜单选择辅助 ────────────────────────
+
+def _select_menu(message, choices):
+    """主菜单选择"""
     from InquirerPy import inquirer
 
-    while True:
-        def _timeout_handler(signum, frame):
-            raise _ScreensaverTimeout()
+    return inquirer.fuzzy(
+        message=f"主人，{message}" if not message.startswith("主人") else message,
+        choices=choices,
+        pointer="❯",
+        border=True,
+        info=False,
+        prompt="🔍 ",
+        match_exact=False,
+        max_height="70%",
+        keybindings=ESC_KEYBINDING,
+    ).execute()
 
-        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        try:
-            signal.alarm(SCREENSAVER_TIMEOUT)
-            result = inquirer.fuzzy(
-                message=f"主人，{message}" if not message.startswith("主人") else message,
-                choices=choices,
-                pointer="❯",
-                border=True,
-                info=False,
-                prompt="🔍 ",
-                match_exact=False,
-                max_height="70%",
+
+def _wait_for_enter():
+    """按回车返回主菜单"""
+    from InquirerPy import inquirer
+    inquirer.text(message="主人，按回车键返回主菜单...").execute()
+
+
+# ──────────────────────── Ray-Job 目录检查 ────────────────────────
+
+def _ensure_yaml_dir(config, store, current_user):
+    """检查 ray-job 目录是否设置，未设置则引导用户配置。返回 (config, yaml_dir)。"""
+    import os
+    from InquirerPy import inquirer
+    from raytool.utils.ui import print_warning
+
+    yaml_dir = config.get("yaml_dir", "")
+    if yaml_dir:
+        expanded = os.path.expanduser(yaml_dir)
+        if os.path.isdir(expanded):
+            return config, yaml_dir
+
+    # 需要设置
+    console.print()
+    print_warning("尚未设置 Ray-Job YAML 目录，请先设置你的任务文件目录")
+    console.print("[dim]该目录用于存放你的 Ray 任务 YAML 文件，提交任务时会从中选择[/dim]\n")
+
+    while True:
+        new_dir = inquirer.text(
+            message="主人，请输入你的 Ray-Job YAML 目录路径:",
+            default="",
+        ).execute().strip()
+
+        if not new_dir:
+            print_warning("目录路径不能为空，请重新输入")
+            continue
+
+        expanded = os.path.expanduser(new_dir)
+        if not os.path.isdir(expanded):
+            create = inquirer.confirm(
+                message=f"目录 {expanded} 不存在，是否创建？",
+                default=True,
             ).execute()
-            signal.alarm(0)
-            return result
-        except _ScreensaverTimeout:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            # 触发屏保
-            try:
-                from raytool.utils.fun import screensaver_matrix
-                screensaver_matrix()
-            except Exception:
-                pass
-            # 屏保退出后再次清空 stdin，防止按键泄漏
-            try:
-                import termios as _termios
-                _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
-            except Exception:
-                pass
-            # 屏保结束，重绘菜单
-            console.clear()
-            print_banner()
-            console.print(f"[dim]命名空间: {namespace}[/dim]")
-            console.print(f"[dim]💤 {SCREENSAVER_TIMEOUT // 60} 分钟无操作将进入字符雨屏保[/dim]\n")
-            continue
-        finally:
-            signal.alarm(0)
-            try:
-                signal.signal(signal.SIGALRM, old_handler)
-            except Exception:
-                pass
+            if create:
+                try:
+                    os.makedirs(expanded, exist_ok=True)
+                    print_success(f"目录已创建: {expanded}")
+                except OSError as e:
+                    print_error(f"创建目录失败: {e}")
+                    continue
+            else:
+                continue
+
+        # 保存到用户偏好
+        store.update_user_config(current_user, "yaml_dir", new_dir)
+        config["yaml_dir"] = new_dir
+        print_success(f"Ray-Job 目录已设置: {new_dir}")
+        return config, new_dir
 
 
-def _wait_with_screensaver(namespace, config):
-    """带屏保超时的 '按回车返回主菜单' 等待"""
+# ──────────────────────── 用户登录 ────────────────────────
+
+def _login(store):
+    """用户登录：从预置列表中选择用户名。"""
     from InquirerPy import inquirer
 
-    while True:
-        def _timeout_handler(signum, frame):
-            raise _ScreensaverTimeout()
+    console.print("\n[bold]请登录[/bold]")
 
-        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        try:
-            signal.alarm(SCREENSAVER_TIMEOUT)
-            inquirer.text(message="主人，按回车键返回主菜单...").execute()
-            signal.alarm(0)
-            return
-        except _ScreensaverTimeout:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            try:
-                from raytool.utils.fun import screensaver_matrix
-                screensaver_matrix()
-            except Exception:
-                pass
-            # 屏保退出后清空 stdin
-            try:
-                import termios as _termios
-                _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
-            except Exception:
-                pass
-            # 屏保结束后重新显示提示
-            console.print()
-            continue
-        finally:
-            signal.alarm(0)
-            try:
-                signal.signal(signal.SIGALRM, old_handler)
-            except Exception:
-                pass
+    preset_users = store.preset_users
+    preset_usernames = {u for u, _ in preset_users}
+
+    users_data = store.list_users()
+    choices = []
+    for username, display_name in preset_users:
+        if username in users_data:
+            choices.append({"name": f"{username} ({display_name})", "value": username})
+    for username, info in users_data.items():
+        if username not in preset_usernames:
+            choices.append({"name": f"{username} ({info.get('display_name', '')})", "value": username})
+
+    if not choices:
+        console.print("[red]无可用用户[/red]")
+        return None
+
+    try:
+        username = inquirer.fuzzy(
+            message="选择你的用户名:",
+            choices=choices,
+            pointer="❯",
+            border=True,
+            keybindings=ESC_KEYBINDING,
+        ).execute()
+    except KeyboardInterrupt:
+        return None
+
+    if not username:
+        return None
+
+    display_name = store.get_display_name(username)
+    print_success(f"欢迎, {display_name} ({username})！")
+    return username
 
 
 # ──────────────────────── 交互式主菜单 ────────────────────────
 
-def interactive_menu(namespace: str, config: dict = None):
+def interactive_menu(namespace: str, config: dict = None, quick_user: str = None):
     """交互式主菜单循环"""
     from InquirerPy import inquirer
+    from raytool.utils.user_store import UserStore
+    from raytool.utils.audit import AuditLogger
 
     if config is None:
         config = _get_config()
 
+    store = UserStore(config["data_dir"])
+    audit = AuditLogger(config["data_dir"])
+
+    # ── 登录 ──
+    console.clear()
+    print_banner()
+
+    if quick_user:
+        # 快速登录：验证用户是否存在
+        user_info = store.get_user(quick_user)
+        if user_info:
+            current_user = quick_user
+            display_name = store.get_display_name(current_user)
+            print_success(f"快速登录: {display_name} ({current_user})")
+        else:
+            print_error(f"用户 '{quick_user}' 不存在，请从列表中选择")
+            current_user = _login(store)
+    else:
+        current_user = _login(store)
+
+    if not current_user:
+        console.print("[dim]再见！[/dim]")
+        return
+
+    audit.log(current_user, "login", "interactive_menu")
+
+    # 加载用户个性化配置覆盖全局配置
+    user_yaml_dir = store.get_user_config(current_user, "yaml_dir")
+    if user_yaml_dir:
+        config["yaml_dir"] = user_yaml_dir
+    user_prewarm_dir = store.get_user_config(current_user, "prewarm_dir")
+    if user_prewarm_dir:
+        config["prewarm_dir"] = user_prewarm_dir
+    user_log_lines = store.get_user_config(current_user, "default_log_lines")
+    if user_log_lines:
+        config["default_log_lines"] = int(user_log_lines)
+
+    # 检查 ray-job 目录是否已设置
+    config, _ = _ensure_yaml_dir(config, store, current_user)
+
     while True:
         console.clear()
         print_banner()
+        display_name = store.get_display_name(current_user)
+        is_admin = store.is_admin(current_user)
+        role_tag = " [magenta](管理员)[/magenta]" if is_admin else ""
+        console.print(f"[dim]当前用户: [cyan]{current_user}[/cyan] ({display_name}){role_tag}[/dim]")
         console.print(f"[dim]命名空间: {namespace}[/dim]")
-        console.print(f"[dim]💤 {SCREENSAVER_TIMEOUT // 60} 分钟无操作将进入字符雨屏保[/dim]\n")
+        console.print(f"[dim]Ray-Job 目录: {config['yaml_dir']}[/dim]\n")
 
         try:
-            action = _select_with_screensaver(
+            action = _select_menu(
                 message="主人，请选择操作 (↑↓选择 / 输入数字或关键词搜索)",
                 choices=[
                     {"name": " 1. 📊 集群概况总览", "value": "status"},
@@ -306,10 +390,13 @@ def interactive_menu(namespace: str, config: dict = None):
                     {"name": "12. 🗺️  节点-Job 映射查询", "value": "map"},
                     {"name": "13. 🛡️  节点调度管理 (禁止/恢复调度)", "value": "cordon"},
                     {"name": "14. 🌐 节点信息 (AZ/实例类型/Pod分布)", "value": "nodes"},
+                    {"name": "15. 🔥 镜像预热 (管理预热YAML)", "value": "prewarm"},
+                    {"name": "16. 🔑 管理员模式 (删除任意PyTorchJob)", "value": "admin"},
+                    {"name": "17. 📦 历史任务日志 (已删除任务的日志)", "value": "history_logs"},
+                    {"name": "18. 👤 用户管理", "value": "user"},
+                    {"name": "19. 🔄 切换用户", "value": "switch"},
                     {"name": " 0. ❌ 退出", "value": "quit"},
                 ],
-                namespace=namespace,
-                config=config,
             )
         except (KeyboardInterrupt, EOFError):
             _exit_gracefully()
@@ -319,27 +406,55 @@ def interactive_menu(namespace: str, config: dict = None):
             _exit_gracefully()
             return
 
+        # ESC 键在主菜单 → 视为退出
+        if action is None:
+            _exit_gracefully()
+            return
+
+        if action == "switch":
+            new_user = _login(store)
+            if new_user:
+                audit.log(current_user, "switch_user", f"{current_user} -> {new_user}")
+                current_user = new_user
+                # 重新加载用户偏好
+                user_yaml_dir = store.get_user_config(current_user, "yaml_dir")
+                if user_yaml_dir:
+                    config["yaml_dir"] = user_yaml_dir
+                else:
+                    config["yaml_dir"] = ""
+                user_prewarm_dir = store.get_user_config(current_user, "prewarm_dir")
+                if user_prewarm_dir:
+                    config["prewarm_dir"] = user_prewarm_dir
+                else:
+                    config["prewarm_dir"] = ""
+                user_log_lines = store.get_user_config(current_user, "default_log_lines")
+                if user_log_lines:
+                    config["default_log_lines"] = int(user_log_lines)
+                # 检查 ray-job 目录
+                config, _ = _ensure_yaml_dir(config, store, current_user)
+            continue
+
         console.print()
 
         try:
             if action == "status":
                 from raytool.commands.status import cluster_status
-                cluster_status(namespace)
+                cluster_status(namespace, config=config, current_user=current_user)
             elif action == "watch":
                 from raytool.commands.watch import watch_pods
                 watch_pods(namespace)
             elif action == "list":
                 from raytool.commands.list_jobs import list_jobs
-                list_jobs(namespace)
+                list_jobs(namespace, config=config)
             elif action == "logs":
                 from raytool.commands.logs import view_logs
                 view_logs(namespace, config["default_log_lines"])
             elif action == "submit":
                 from raytool.commands.submit import submit_job
-                submit_job(namespace, config["yaml_dir"])
+                submit_job(namespace, config["yaml_dir"], current_user=current_user, config=config)
             elif action == "delete":
                 from raytool.commands.delete import delete_jobs
-                delete_jobs(namespace)
+                delete_jobs(namespace, current_user=current_user, config=config)
             elif action == "exec":
                 from raytool.commands.shell import shell_into_pod
                 shell_into_pod(namespace, config["default_shell"])
@@ -348,13 +463,13 @@ def interactive_menu(namespace: str, config: dict = None):
                 describe_job(namespace)
             elif action == "port-forward":
                 from raytool.commands.port_forward import port_forward
-                port_forward(namespace)
+                port_forward(namespace, remote_port=config.get("default_remote_port", 8265))
             elif action == "scale":
                 from raytool.commands.scale import scale_job
                 scale_job(namespace)
             elif action == "occupy":
                 from raytool.commands.occupy import occupy_gpus
-                occupy_gpus(namespace)
+                occupy_gpus(namespace, config=config)
             elif action == "map":
                 from raytool.commands.node_job_map import node_job_map
                 node_job_map(namespace)
@@ -364,6 +479,18 @@ def interactive_menu(namespace: str, config: dict = None):
             elif action == "nodes":
                 from raytool.commands.nodes import nodes_info
                 nodes_info(namespace)
+            elif action == "prewarm":
+                from raytool.commands.prewarm import prewarm_images
+                prewarm_images(namespace, config)
+            elif action == "admin":
+                from raytool.commands.admin import admin_mode
+                admin_mode(namespace)
+            elif action == "history_logs":
+                from raytool.commands.history_logs import view_history_logs
+                view_history_logs(config, current_user)
+            elif action == "user":
+                from raytool.commands.user import user_cmd
+                user_cmd(config, current_user)
         except KeyboardInterrupt:
             console.print("\n[dim]操作已中断[/dim]")
         except Exception as e:
@@ -378,7 +505,7 @@ def interactive_menu(namespace: str, config: dict = None):
             pass
         console.print()
         try:
-            _wait_with_screensaver(namespace, config)
+            _wait_for_enter()
         except (KeyboardInterrupt, EOFError):
             _exit_gracefully()
             return
@@ -386,11 +513,6 @@ def interactive_menu(namespace: str, config: dict = None):
 
 def _exit_gracefully():
     console.print("\n[cyan]👋 主人再见！[/cyan]")
-    try:
-        from raytool.utils.fun import run_cmatrix
-        run_cmatrix(duration=3)
-    except Exception:
-        pass
 
 
 # ──────────────────────── 入口 ────────────────────────

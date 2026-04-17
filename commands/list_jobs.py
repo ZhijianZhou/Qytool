@@ -1,20 +1,34 @@
 """功能: 查看所有任务列表（包括 Running / Pending / Failed 等全部状态）"""
 import json
 from datetime import datetime, timezone
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 from rich.table import Table
 from rich.panel import Panel
+from rich.markup import escape
 from InquirerPy import inquirer
 
 from raytool.utils.kube import run_kubectl, get_pods, group_pods_by_job, get_pod_role
 from raytool.utils.ui import (
     console, colorize_status, print_warning, print_info, print_error,
+    ESC_KEYBINDING,
 )
 
 
-def list_jobs(namespace: str):
+def list_jobs(namespace: str, config: dict = None):
     """列出所有任务（按 PyTorchJob + Pod 全量展示）"""
+    # 加载任务归属数据
+    job_owner_map = {}
+    if config:
+        try:
+            from raytool.utils.user_store import UserStore
+            store = UserStore(config["data_dir"])
+            owners_data = store._load_job_owners()
+            for job_name, info in owners_data.items():
+                job_owner_map[job_name] = info.get("owner", "")
+        except Exception:
+            pass
+
     print_info("正在查询所有任务...")
     console.print()
 
@@ -48,7 +62,7 @@ def list_jobs(namespace: str):
 
     # ── 5. 展示任务表格 ──
     if pytorchjobs:
-        _print_all_jobs_table(pytorchjobs, pods, namespace)
+        _print_all_jobs_table(pytorchjobs, pods, namespace, job_owner_map)
     else:
         # 无 PyTorchJob，按 Pod 分组展示
         jobs = group_pods_by_job(pods)
@@ -72,9 +86,10 @@ def list_jobs(namespace: str):
             {"name": "❌ 返回", "value": "cancel"},
         ],
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if action == "cancel":
+    if action == "cancel" or action is None:
         return
     elif action == "detail":
         _show_job_pod_detail(pytorchjobs, pods, namespace)
@@ -233,8 +248,11 @@ def _print_status_summary(pytorchjobs: list):
     ))
 
 
-def _print_all_jobs_table(pytorchjobs: list, pods: list, namespace: str):
+def _print_all_jobs_table(pytorchjobs: list, pods: list, namespace: str, job_owner_map: dict = None):
     """打印全量 PyTorchJob 任务表格"""
+    if job_owner_map is None:
+        job_owner_map = {}
+
     # 将 Pod 按任务名分组（用于统计实际 Pod 状态）
     pod_by_job = {}
     for p in pods:
@@ -249,6 +267,7 @@ def _print_all_jobs_table(pytorchjobs: list, pods: list, namespace: str):
     table = Table(title="📋 全部任务列表", show_lines=True, border_style="dim")
     table.add_column("#", style="dim", width=4)
     table.add_column("任务名称", style="bold cyan", min_width=30)
+    table.add_column("用户", style="green", width=14)
     table.add_column("状态", justify="center", width=12)
     table.add_column("节点", justify="center", width=6)
     table.add_column("GPU", justify="center", width=8)
@@ -264,9 +283,14 @@ def _print_all_jobs_table(pytorchjobs: list, pods: list, namespace: str):
         instance_display = job["instance_type"].replace("ml.", "") if job["instance_type"] != "-" else "-"
         gpu_display = f"{job['total_gpus']}" if job["total_gpus"] > 0 else "-"
 
+        # 获取任务所属用户
+        owner = job_owner_map.get(job["name"], "")
+        owner_display = owner if owner else "[dim]-[/dim]"
+
         table.add_row(
             str(i),
             job["name"],
+            owner_display,
             colorize_status(job["status"]),
             str(job["total_nodes"]),
             gpu_display,
@@ -339,7 +363,7 @@ def _print_pending_alerts(pending_jobs: list, pods: list):
     console.print(Panel(
         f"[bold yellow]⚠️  有 {len(pending_jobs)} 个任务处于 Pending 状态[/bold yellow]\n\n"
         + "\n".join(
-            f"  [yellow]•[/yellow] {j['name']}  ({j['total_nodes']} 节点, {j['total_gpus']} GPU, 等待 {j['age']})"
+            f"  [yellow]•[/yellow] {escape(j['name'])}  ({j['total_nodes']} 节点, {j['total_gpus']} GPU, 等待 {j['age']})"
             for j in pending_jobs
         )
         + "\n\n[dim]  提示: 选择「🩺 诊断 Pending 任务」查看详细原因[/dim]",
@@ -362,9 +386,10 @@ def _show_job_pod_detail(pytorchjobs: list, pods: list, namespace: str):
         message="选择要查看的任务",
         choices=choices,
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
 
-    if selected == "__cancel__":
+    if selected == "__cancel__" or selected is None:
         return
 
     # 过滤该任务的 Pod
@@ -429,9 +454,10 @@ def _diagnose_pending(pending_jobs: list, pods: list, namespace: str):
             message="选择要诊断的任务",
             choices=choices,
             pointer="❯",
+            keybindings=ESC_KEYBINDING,
         ).execute()
 
-        if selected == "__cancel__":
+        if selected == "__cancel__" or selected is None:
             return
 
         if selected == "__all__":
@@ -449,8 +475,8 @@ def _diagnose_pending(pending_jobs: list, pods: list, namespace: str):
 def _diagnose_single_job(job: dict, pods: list, namespace: str):
     """诊断单个 Pending 任务"""
     console.print()
-    console.print(f"[bold cyan]🩺 诊断: {job['name']}[/bold cyan]")
-    console.print(f"  状态: {colorize_status(job['status'])}  |  节点: {job['total_nodes']}  |  GPU: {job['total_gpus']}  |  等待: {job['age']}")
+    console.print(f"[bold cyan]🩺 诊断: {escape(job['name'])}[/bold cyan]")
+    console.print(f"  状态: {colorize_status(job['status'])}  |  节点: {job['total_nodes']}  |  GPU: {job['total_gpus']}  |  等待: {escape(str(job['age']))}")
     console.print()
 
     # 找到该任务的一个 Pending Pod，查看事件
@@ -507,23 +533,23 @@ def _print_events_section(describe_output: str, resource_name: str):
     # 解析事件，高亮 Warning
     formatted = []
     for line in events_lines:
-        stripped = line.strip()
-        if stripped.startswith("Warning") or "Warning" in stripped:
+        stripped = escape(line.strip())
+        if "Warning" in line.strip():
             formatted.append(f"  [bold yellow]{stripped}[/bold yellow]")
-        elif stripped.startswith("Normal"):
+        elif line.strip().startswith("Normal"):
             formatted.append(f"  [dim]{stripped}[/dim]")
-        elif stripped.startswith("Events:"):
+        elif line.strip().startswith("Events:"):
             formatted.append(f"  [bold]{stripped}[/bold]")
-        elif stripped.startswith("Type") and "Reason" in stripped:
+        elif line.strip().startswith("Type") and "Reason" in line.strip():
             formatted.append(f"  [bold]{stripped}[/bold]")
-        elif stripped.startswith("----"):
+        elif line.strip().startswith("----"):
             formatted.append(f"  [dim]{stripped}[/dim]")
         else:
             formatted.append(f"  {stripped}")
 
     console.print(Panel(
         "\n".join(formatted),
-        title=f"📋 {resource_name} 事件",
+        title=f"📋 {escape(resource_name)} 事件",
         border_style="yellow",
         padding=(0, 1),
     ))

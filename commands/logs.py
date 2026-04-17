@@ -1,9 +1,10 @@
 """功能3: 查看任务日志"""
 from InquirerPy import inquirer
+from rich.markup import escape
 from raytool.utils.kube import get_running_pods, group_pods_by_job, run_kubectl, run_kubectl_stream
 from raytool.utils.ui import (
     console, select_job, select_pod, select_container,
-    print_info, print_error, print_warning, STATUS_COLORS,
+    print_info, print_error, print_warning, STATUS_COLORS, ESC_KEYBINDING,
 )
 
 
@@ -55,7 +56,11 @@ def view_logs(namespace: str, default_lines: int = 100, job_name: str = None, po
             {"name": "↩️  返回上一级", "value": ("cancel", None)},
         ],
         pointer="❯",
+        keybindings=ESC_KEYBINDING,
     ).execute()
+
+    if mode is None:
+        return
 
     mode_type, mode_value = mode
     if mode_type == "cancel":
@@ -87,12 +92,13 @@ def view_logs(namespace: str, default_lines: int = 100, job_name: str = None, po
             for line in proc.stdout:
                 # 简单的日志着色: ERROR 红色, WARNING 黄色
                 line = line.rstrip()
+                escaped = escape(line)
                 if "ERROR" in line or "error" in line:
-                    console.print(f"[red]{line}[/red]")
+                    console.print(f"[red]{escaped}[/red]")
                 elif "WARNING" in line or "warning" in line or "WARN" in line:
-                    console.print(f"[yellow]{line}[/yellow]")
+                    console.print(f"[yellow]{escaped}[/yellow]")
                 else:
-                    console.print(line)
+                    console.print(escaped)
         except KeyboardInterrupt:
             console.print("\n[dim]主人，已退出日志追踪[/dim]")
         finally:
@@ -114,10 +120,11 @@ def view_logs(namespace: str, default_lines: int = 100, job_name: str = None, po
             return
         # 输出并着色
         for line in stdout.splitlines():
+            escaped = escape(line)
             if "ERROR" in line or "error" in line:
-                console.print(f"[red]{line}[/red]")
+                console.print(f"[red]{escaped}[/red]")
             elif "WARNING" in line or "warning" in line or "WARN" in line:
-                console.print(f"[yellow]{line}[/yellow]")
+                console.print(f"[yellow]{escaped}[/yellow]")
             else:
-                console.print(line)
+                console.print(escaped)
 
